@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>ERP Chatbot</title>
+  <style>
+    /* --- Reset & body --- */
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+
+    body {
+      background: linear-gradient(135deg, #1f2937, #374151);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      color: #f9fafb;
+    }
+
+    /* --- Chat container --- */
+    .chat-container {
+      background: #111827;
+      width: 100%;
+      max-width: 600px;
+      border-radius: 15px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+      padding: 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    h1 {
+      text-align: center;
+      font-size: 2rem;
+      margin-bottom: 1rem;
+      color: #fbbf24;
+      text-shadow: 1px 1px 2px #000;
+    }
+
+    /* --- Input & button --- */
+    .input-group {
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    input#question {
+      flex: 1;
+      padding: 0.75rem 1rem;
+      border-radius: 10px;
+      border: 2px solid #374151;
+      background-color: #1f2937;
+      color: #f9fafb;
+      font-size: 1rem;
+      transition: all 0.3s ease;
+    }
+
+    input#question:focus {
+      outline: none;
+      border-color: #fbbf24;
+      box-shadow: 0 0 10px rgba(251,191,36,0.6);
+    }
+
+    button {
+      padding: 0.75rem 1.5rem;
+      border-radius: 10px;
+      border: none;
+      background-color: #fbbf24;
+      color: #111827;
+      font-size: 1rem;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      font-weight: bold;
+    }
+
+    button:hover {
+      background-color: #f59e0b;
+      transform: translateY(-2px);
+      box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+    }
+
+    /* --- Answer box --- */
+    #answer {
+      background-color: #1f2937;
+      border-radius: 10px;
+      padding: 1rem;
+      min-height: 120px;
+      overflow-y: auto;
+      border: 1px solid #374151;
+      font-size: 1rem;
+      line-height: 1.5;
+      white-space: pre-wrap;
+    }
+
+    /* --- Scrollbar --- */
+    #answer::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    #answer::-webkit-scrollbar-thumb {
+      background-color: #fbbf24;
+      border-radius: 4px;
+    }
+
+    #answer::-webkit-scrollbar-track {
+      background-color: #111827;
+    }
+
+    /* --- Responsive --- */
+    @media (max-width: 640px) {
+      .chat-container {
+        padding: 1rem;
+      }
+
+      button {
+        padding: 0.75rem 1rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="chat-container">
+    <h1>ASK GFX ASSISTANT</h1>
+    <div class="input-group">
+      <input id="question" type="text" placeholder="Ask something...">
+      <button onclick="ask()">Ask</button>
+    </div>
+    <p id="answer"></p>
+  </div>
+
+  <script>
+    async function ask() {
+      const question = document.getElementById("question").value;
+
+      try {
+        const response = await fetch("/chatbot", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ question })
+});
+
+        const data = await response.json();
+        document.getElementById("answer").innerText = data.answer || "No answer received.";
+      } catch (err) {
+        console.error("❌ Error:", err);
+        document.getElementById("answer").innerText = "Error connecting to chatbot.";
+      }
+    }
+  </script>
+</body>
+</html>
