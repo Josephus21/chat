@@ -105,21 +105,24 @@ async function parseQuestionWithGPT(question) {
           role: "user",
           content: `
 You are an ERP assistant. Detect if this question is about ERP sales orders or general. 
-Return JSON with intent, date, year, gpThreshold, customer, status, topN, requested fields. 
+Return JSON with intent, date, year, gpThreshold, customer, salesRep, status, topN, requested fields, or monthlyTotals intent.
 If it's a general question, return intent: "general".
+
+Automatically detect if any name mentioned is a customer or a salesRep.
 
 Question: "${question}"
 
 Return only JSON like:
 {
-  "intent": "count" | "list" | "sample" | "topCustomers" | "topDivision" | "topSales" | "general",
+  "intent": "count" | "list" | "sample" | "topCustomers" | "topDivision" | "topSales" | "monthlyTotals" | "general",
   "date": "YYYY-MM-DD" | null,
   "year": "YYYY" | null,
   "gpThreshold": { "operator": ">", "value": 55 } | null,
   "customer": "customer keyword" | null,
+  "salesRep": "salesRep keyword" | null,
   "status": "BILLED" | "JO IN-PROCESS" | null,
   "topN": 1 | 2 | 3 | null,
-  "fields": ["so_number","gp_rate"]
+  "fields": ["so_number","gp_rate","amount"]
 }`
         }
       ],
@@ -129,12 +132,31 @@ Return only JSON like:
     let content = completion.choices[0].message.content;
     content = content.replace(/```json|```/g, "").trim();
     let parsed = JSON.parse(content);
+
     if (!parsed.intent) parsed.intent = "general";
     if (!parsed.fields) parsed.fields = [];
+    // Default to null for missing properties
+    parsed.customer = parsed.customer || null;
+    parsed.salesRep = parsed.salesRep || null;
+    parsed.topN = parsed.topN || null;
+    parsed.year = parsed.year || null;
+    parsed.date = parsed.date || null;
+    parsed.gpThreshold = parsed.gpThreshold || null;
+
     return parsed;
   } catch (err) {
     console.error("GPT JSON parse error:", err);
-    return { intent: "general", date: null, gpThreshold: null, customer: null, status: null, fields: [], topN: null, year: null };
+    return { 
+      intent: "general", 
+      date: null, 
+      gpThreshold: null, 
+      customer: null, 
+      salesRep: null, 
+      status: null, 
+      fields: [], 
+      topN: null, 
+      year: null 
+    };
   }
 }
 
@@ -231,6 +253,21 @@ async function formatResponse(orders, parsed, question) {
     const topN = parsed.topN || 1;
     return sorted.slice(0, topN).map(([rep, amt], i) => `Top ${i+1} Sales Personnel: ${rep} - Total Amount: ${formatPeso(amt)}`).join("\n");
   }
+
+  if (parsed.intent === "monthlyTotals" && parsed.year && (parsed.customer || parsed.salesRep)) {
+  const monthlyMap = {};
+  orders.forEach(o => {
+    if (!o.date) return;
+    const month = o.date.slice(0,7); // YYYY-MM
+    monthlyMap[month] = (monthlyMap[month] || 0) + o.amount;
+  });
+
+  return Object.entries(monthlyMap)
+    .sort(([a],[b]) => a.localeCompare(b))
+    .map(([month, amt]) => `${month}: ${formatPeso(amt)}`)
+    .join("\n");
+}
+
 
   return "Could not understand the question.";
 }
