@@ -1,9 +1,11 @@
+// ✅ server.js
+
 import express from "express";
 import fetch from "node-fetch";
 import cors from "cors";
 import OpenAI from "openai";
 import "dotenv/config";
-import * as franc from "franc"; // fixed import
+import * as franc from "franc";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -16,57 +18,125 @@ app.use(cors());
 app.use(express.static(path.join(__dirname, "public")));
 
 // ✅ ERP constants
-const ERP_API = "http://sandboxgsuite.graphicstar.com.ph/api/get_sales_orders";
+const ERP_API = "http://gsuite.graphicstar.com.ph/api/get_sales_orders";
 const TOKEN = process.env.ERP_TOKEN;
 const LOCATION_PK = "00a18fc0-051d-11ea-8e35-aba492d8cb65";
-const EMPL_PK = "ef0926b0-04ff-11ee-8114-5534a282e29b";
+const EMPL_PK = "c3f05940-066b-11ee-98e7-b92ca15f504a";
+const PREPARED_BY = "Josephus Abatayo";
 
 // ✅ OpenAI
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// 🔹 Step 0: Call ERP API
-async function callERP(payload) {
-  const response = await fetch(ERP_API, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
-  return response.json();
+// ✅ Memory (cleared on refresh)
+let memory = [];
+let lastDateContext = null; // 🆕 track last used date
+
+// Helper: Format PHP currency
+function formatPeso(amount) {
+  return new Intl.NumberFormat("en-PH", {
+    style: "currency",
+    currency: "PHP",
+  }).format(amount);
 }
 
-// 🔹 Step 1: GPT → ERP payload + intent
+// 🔹 Call ERP API
+async function callERP(payload) {
+  try {
+    const response = await fetch(ERP_API, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    return await response.json();
+  } catch (err) {
+    console.error("ERP API error:", err);
+    return { data: [] };
+  }
+}
+
+// 🔹 Fetch all sales orders with pagination
+async function fetchAllSalesOrders(payload) {
+  let allData = [];
+  let offset = 0;
+  const limit = 500;
+
+  while (true) {
+    const res = await callERP({ ...payload, limit, offset });
+    const soList = res.data?.[0] || [];
+    allData = allData.concat(soList);
+    if (soList.length < limit) break;
+    offset += limit;
+  }
+
+  return allData;
+}
+
+// 🔹 Parse question for date range
+function getDateRangeFromQuestion(question) {
+  const today = new Date();
+  let start = null;
+  let end = null;
+
+  if (/yesterday/i.test(question)) {
+    start = end = new Date(today.setDate(today.getDate() - 1));
+  } else if (/last week/i.test(question)) {
+    const day = today.getDay();
+    start = new Date(today.setDate(today.getDate() - day - 7));
+    end = new Date(today.setDate(today.getDate() - day - 1));
+  } else if (/\d{4}-\d{2}-\d{2}/.test(question)) {
+    const dates = question.match(/\d{4}-\d{2}-\d{2}/g);
+    start = new Date(dates[0]);
+    end = dates[1] ? new Date(dates[1]) : start;
+  } else if (/september \d{1,2}, 2025/i.test(question)) {
+    const day = question.match(/\d{1,2}/)[0];
+    start = end = new Date(`2025-09-${day.padStart(2, "0")}`);
+  }
+
+  if (!start && lastDateContext) {
+    // 🆕 fallback to last date if no new date detected
+    return lastDateContext;
+  }
+
+  const format = (d) => d.toISOString().split("T")[0];
+  const range = { date1: format(start), date2: format(end) };
+  lastDateContext = range; // 🆕 update last context
+  return range;
+}
+
+// 🔹 GPT → ERP payload + intent
 async function questionToQuery(question) {
+  const { date1, date2 } = getDateRangeFromQuestion(question);
+
   const systemPrompt = `
-You are an ERP query builder. 
-Given a user question about sales orders, return a JSON object:
+You are an ERP assistant. Given a user question about sales orders, return JSON:
 
 {
   "intent": "count" | "total" | "breakdown" | "max" | "min" | "list",
   "payload": {
     "empl_pk": "${EMPL_PK}",
-    "preparedBy": "System Administrator",
+    "preparedBy": "${PREPARED_BY}",
     "viewAll": 1,
     "searchKey": "",
     "customerPK": null,
     "departmentPK": null,
     "filterDate": {
-      "filter": "between",
-      "date1": { "hide": false, "date": "YYYY-MM-DD" },
-      "date2": { "hide": false, "date": "YYYY-MM-DD" }
+      "filter": "range",
+      "date1": { "hide": false, "date": "${date1}" },
+      "date2": { "hide": false, "date": "${date2}" }
     },
     "limit": 500,
     "offset": 0,
     "locationPK": "${LOCATION_PK}",
-    "salesRepPK": null
+    "salesRepPK": null,
+    "status": ""
   }
 }
 
 Rules:
-- Detect if user wants count, total, breakdown, max, min, or list.
-- Parse any date range. Default: Jan 01, 2000 → Dec 31, 2099.
+- Detect intent from the question.
 - Return JSON only.
 `;
 
@@ -79,74 +149,84 @@ Rules:
     temperature: 0,
   });
 
-  return JSON.parse(completion.choices[0].message.content);
+  try {
+    const content = completion.choices[0].message.content;
+    const jsonStr = content.match(/\{[\s\S]*\}/)?.[0];
+    return jsonStr ? JSON.parse(jsonStr) : { intent: "list", payload: {} };
+  } catch (err) {
+    console.error(
+      "Failed to parse GPT output:",
+      completion.choices[0].message.content
+    );
+    return { intent: "list", payload: {} };
+  }
 }
 
-// 🔹 Step 2: Summarize Answer
-async function summarizeAnswer(question, intent, erpData) {
-  const soArray = Array.isArray(erpData.data?.[0]) ? erpData.data[0] : [];
-  const totalSO = erpData.data?.[1] ?? soArray.length;
+// 🔹 Pre-summarize ERP data
+function summarizeERPData(erpData) {
+  const totalsByCustomer = {};
+  let totalAmount = 0;
 
-  const flattenedERPData = {
-    soList: soArray.map(so => so.so_upk),
-    total: totalSO,
-    summary: soArray.map(so => ({
-      so_upk: so.so_upk,
-      Status_TransH: so.Status_TransH,
-      TotalAmount_TransH: so.TotalAmount_TransH,
-      Name_Cust: so.Name_Cust,
-      DateCreated_TransH: so.DateCreated_TransH
-    }))
+  erpData.forEach((so) => {
+    const amount = Number(so.TotalAmount_TransH || 0);
+    if (isNaN(amount)) return;
+    totalAmount += amount;
+    const cust = so.Name_Cust || "Unknown";
+    totalsByCustomer[cust] = (totalsByCustomer[cust] || 0) + amount;
+  });
+
+  const sortedCustomers = Object.entries(totalsByCustomer)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, amount]) => ({ name, amount }));
+
+  return {
+    totalAmount,
+    totalSO: erpData.length,
+    topCustomer: sortedCustomers[0]?.name || null,
+    topAmount: sortedCustomers[0]?.amount || 0,
+    rawOrders: erpData.map((so) => ({
+      soNumber: so.so_upk,
+      customer: so.Name_Cust,
+      amount: Number(so.TotalAmount_TransH || 0),
+      gpRate: Number(so.gpRate || 0),
+      status: so.Status_TransH,
+      date: so.DateCreated_TransH,
+    })),
   };
+}
 
-  // Detect language
-  const langCode = franc.franc(question);
-  let language = "English";
-  if (langCode === "tgl") language = "Tagalog";
-  else if (langCode === "ceb") language = "Bisaya";
+// 🔹 Summarize Answer
+async function summarizeAnswer(question, intent, summaryData) {
+  const langCode = franc.franc(question) || "eng";
+  let language =
+    { eng: "English", tgl: "Tagalog", ceb: "Bisaya" }[langCode] || "English";
 
-  // Check for specific SO
-  const soNumberMatch = question.match(/SO-\d+/i);
-  if (soNumberMatch) {
-    const requestedSO = soNumberMatch[0];
-    const soObj = soArray.find(so => so.so_upk.toUpperCase() === requestedSO.toUpperCase());
-    if (soObj) {
-      if (language === "English") {
-        return `Sales Order ${requestedSO} details:\n- Status: ${soObj.Status_TransH}\n- Total Amount: ${soObj.TotalAmount_TransH}\n- Customer: ${soObj.Name_Cust}\n- Date Created: ${soObj.DateCreated_TransH}`;
-      } else if (language === "Tagalog") {
-        return `Detalye ng Sales Order ${requestedSO}:\n- Status: ${soObj.Status_TransH}\n- Kabuuang Halaga: ${soObj.TotalAmount_TransH}\n- Customer: ${soObj.Name_Cust}\n- Petsa ng Paglikha: ${soObj.DateCreated_TransH}`;
-      } else {
-        return `Detalye sa Sales Order ${requestedSO}:\n- Status: ${soObj.Status_TransH}\n- Total Amount: ${soObj.TotalAmount_TransH}\n- Customer: ${soObj.Name_Cust}\n- Date Created: ${soObj.DateCreated_TransH}`;
-      }
-    } else {
-      if (language === "English") return `Sales order ${requestedSO} was not found in the selected range.`;
-      if (language === "Tagalog") return `Hindi natagpuan ang Sales Order ${requestedSO} sa piniling saklaw.`;
-      return `Wala nasakpan ang Sales Order ${requestedSO} sa napiling range.`;
-    }
-  }
-
-  // General / hybrid
   const systemPrompt = `
-You are a helpful ERP assistant answering sales order questions.
-Answer in the same language as the user question: ${language}.
-ERP data contains: soList, total, summary.
+You are a smart ERP assistant.
+ERP summary data contains: totalSO, totalAmount, topCustomer, rawOrders.
 Intent: count, list, total, max, min, breakdown.
+
 Rules:
 - count: return total SOs
-- list: list SO numbers
+- list: return list of SO numbers with their amounts and GP rates
 - total: sum TotalAmount_TransH
-- max: SO with highest TotalAmount_TransH
-- min: SO with lowest TotalAmount_TransH
-- breakdown: group by customer, department, or month
-- If soList is empty, say "No sales orders found."
+- If rawOrders are provided, always include them when user asks for SO list or GP rate.
+- Answer in ${language}.
+- All amounts in ₱ (PHP).
 `;
 
   const completion = await openai.chat.completions.create({
     model: "gpt-4o-mini",
     messages: [
       { role: "system", content: systemPrompt },
-      { role: "user", content: `Question: ${question}\nIntent: ${intent}\nERP Data: ${JSON.stringify(flattenedERPData)}` },
+      {
+        role: "user",
+        content: `Question: ${question}\nIntent: ${intent}\nERP Summary Data: ${JSON.stringify(
+          summaryData
+        )}`,
+      },
     ],
+    temperature: 0,
   });
 
   return completion.choices[0].message.content;
@@ -158,38 +238,43 @@ app.post("/chatbot", async (req, res) => {
     const { question } = req.body;
     console.log("💬 User asked:", question);
 
-    const erpKeywords = /(SO-|sales order|customer|department|total|count|breakdown|max|min|list)/i;
+    memory.push({ role: "user", content: question });
 
-    if (!erpKeywords.test(question)) {
+    const isERPQuestion = /(sales order|SO-|customer|amount|total|revenue|gp rate)/i.test(
+      question
+    );
+
+    if (!isERPQuestion) {
       const completion = await openai.chat.completions.create({
         model: "gpt-4o-mini",
-        messages: [{ role: "user", content: question }],
+        messages: memory,
         temperature: 0,
       });
-      return res.json({
-        question,
-        intent: "general",
-        answer: completion.choices[0].message.content,
-      });
+      const answer = completion.choices[0].message.content;
+      memory.push({ role: "assistant", content: answer });
+      return res.json({ type: "text", data: answer });
     }
 
-    // Step 1: Parse question → GPT for ERP intent
+    // ERP Question → Process
     const { intent, payload } = await questionToQuery(question);
-    console.log("➡️ Intent:", intent);
+    const allSOData = await fetchAllSalesOrders(payload);
+    const summaryData = summarizeERPData(allSOData);
+    const answer = await summarizeAnswer(question, intent, summaryData);
 
-    // Step 2: Fetch ERP
-    const erpData = await callERP(payload);
-
-    // Step 3: Summarize / hybrid answer
-    const answer = await summarizeAnswer(question, intent, erpData);
-
-    res.json({ question, intent, answer });
+    memory.push({ role: "assistant", content: answer });
+    res.json({ type: "text", data: answer });
   } catch (err) {
     console.error("❌ Chatbot error:", err);
     res.status(500).json({ error: "Chatbot failed" });
   }
 });
 
-app.listen(3000, () => {
-  console.log("✅ Chatbot running on http://localhost:3000");
+app.post("/reset-memory", (req, res) => {
+  memory = [];
+  lastDateContext = null;
+  res.json({ success: true });
 });
+
+app.listen(3000, () =>
+  console.log("✅ Chatbot running on http://localhost:3000")
+);
