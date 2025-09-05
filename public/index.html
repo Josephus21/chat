@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>ERP Chatbot</title>
+  <title>GFX ASSISTANT</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
     body {
@@ -24,9 +24,15 @@
       padding: 1rem; overflow-y: auto; display: flex; flex-direction: column; gap: 0.5rem;
       border: 1px solid #374151;
     }
-    .message { max-width: 70%; padding: 0.75rem 1rem; border-radius: 20px; word-wrap: break-word; line-height: 1.4; white-space: pre-wrap; }
+    .message-wrapper { display: flex; gap: 0.5rem; align-items: flex-end; }
+    .message { max-width: 70%; padding: 0.75rem 1rem; border-radius: 20px; word-wrap: break-word; line-height: 1.4; white-space: pre-wrap; position: relative; }
     .user { align-self: flex-end; background-color: #fbbf24; color: #111827; border-bottom-right-radius: 0; }
     .bot { align-self: flex-start; background-color: #1f2937; color: #f9fafb; border: 1px solid #374151; border-bottom-left-radius: 0; }
+    .avatar { width: 35px; height: 35px; border-radius: 50%; flex-shrink: 0; background-size: cover; background-position: center; }
+    .user-avatar { background-image: url('https://i.pinimg.com/736x/50/7a/c6/507ac6b743f0dc9242c91b0b51f02d38.jpg'); }
+    .bot-avatar { background-image: url('https://pbs.twimg.com/profile_images/3373670825/8e1c78389f8535e8989bfc3fff013e2c.jpeg'); }
+    .typing { font-style: italic; color: #fbbf24; }
+
     .input-group { display: flex; gap: 0.5rem; }
     input#question {
       flex: 1; padding: 0.75rem 1rem; border-radius: 10px; border: 2px solid #374151;
@@ -47,7 +53,7 @@
 </head>
 <body>
   <div class="chat-container">
-    <h1>ASK GFX ASSISTANT</h1>
+    <h1>ASK JWU (Jot With Us)</h1>
     <div id="chat-window"></div>
     <div class="input-group">
       <input id="question" type="text" placeholder="Type your question..." autocomplete="off">
@@ -60,23 +66,53 @@ const chatWindow = document.getElementById("chat-window");
 const input = document.getElementById("question");
 
 function addMessage(content, sender) {
+  const wrapper = document.createElement("div");
+  wrapper.classList.add("message-wrapper");
+  wrapper.style.justifyContent = sender === "user" ? "flex-end" : "flex-start";
+
+  const avatar = document.createElement("div");
+  avatar.classList.add("avatar", sender === "user" ? "user-avatar" : "bot-avatar");
+
   const msgDiv = document.createElement("div");
   msgDiv.classList.add("message", sender);
 
-  // If content is HTML, render it
   if (typeof content === "string") {
-    // Simple detection for rich content (like lists or headings)
-    if (/<(ul|ol|h1|h2|h3|p|li|b|strong|i|em)>/.test(content)) {
-      msgDiv.innerHTML = content;
-    } else {
-      msgDiv.innerText = content;
-    }
+    msgDiv.innerText = content;
   } else {
     msgDiv.appendChild(content);
   }
 
-  chatWindow.appendChild(msgDiv);
+  if (sender === "user") {
+    wrapper.appendChild(msgDiv);
+    wrapper.appendChild(avatar);
+  } else {
+    wrapper.appendChild(avatar);
+    wrapper.appendChild(msgDiv);
+  }
+
+  chatWindow.appendChild(wrapper);
   chatWindow.scrollTop = chatWindow.scrollHeight;
+}
+
+// Typing animation
+function showTyping() {
+  const wrapper = document.createElement("div");
+  wrapper.classList.add("message-wrapper");
+  wrapper.style.justifyContent = "flex-start";
+
+  const avatar = document.createElement("div");
+  avatar.classList.add("avatar", "bot-avatar");
+
+  const msgDiv = document.createElement("div");
+  msgDiv.classList.add("message", "bot", "typing");
+  msgDiv.innerText = "Typing...";
+
+  wrapper.appendChild(avatar);
+  wrapper.appendChild(msgDiv);
+  chatWindow.appendChild(wrapper);
+  chatWindow.scrollTop = chatWindow.scrollHeight;
+
+  return msgDiv;
 }
 
 async function ask() {
@@ -86,6 +122,8 @@ async function ask() {
   addMessage(question, "user");
   input.value = "";
 
+  const typingEl = showTyping();
+
   try {
     const res = await fetch("/chatbot", {
       method: "POST",
@@ -93,6 +131,8 @@ async function ask() {
       body: JSON.stringify({ question })
     });
     const data = await res.json();
+
+    typingEl.parentNode.remove(); // remove typing
 
     if (data.type === "text") addMessage(data.data || "No answer received.", "bot");
     else if (data.type === "pdf") {
@@ -107,6 +147,7 @@ async function ask() {
     }
   } catch (err) {
     console.error("❌ Error:", err);
+    typingEl.parentNode.remove();
     addMessage("Error connecting to chatbot.", "bot");
   }
 }
@@ -117,9 +158,10 @@ input.addEventListener("keydown", e => {
     ask();
   }
 });
+
 window.addEventListener("load", () => {
   fetch("/reset-memory", { method: "POST" });
 });
-</script>
+  </script>
 </body>
 </html>
