@@ -80,7 +80,12 @@ function summarizeERPData(erpData) {
     salesRep: so.Name_Empl || "Unknown",
     amount: Number(so.TotalAmount_TransH || 0),
     gpRate: parseFloat((so.gpRate || "0").toString().replace("%", "").replace(",", "")),
+    status: so.Status_TransH,
     date: so.DateCreated_TransH,
+    so_number: so.so_upk || "Unknown",
+    so_upk: so.SysPK_TransH_UPK || so.SysPK_TransH,
+
+    
   }));
 }
 
@@ -120,9 +125,9 @@ Return only JSON like:
   "gpThreshold": { "operator": ">", "value": 55 } | null,
   "customer": "customer keyword" | null,
   "salesRep": "salesRep keyword" | null,
-  "status": "BILLED" | "JO IN-PROCESS" | null,
+  "status": "BILLED" | "JO IN-PROCESS" | "PENDING FOR JO" | "CANCELLED" | "PENDING BILLING" | null,
   "topN": 1 | 2 | 3 | null,
-  "fields": ["so_number","gp_rate","amount"]
+  "fields": ["so_number","gp_rate","amount","status"]
 }`
         }
       ],
@@ -142,6 +147,7 @@ Return only JSON like:
     parsed.year = parsed.year || null;
     parsed.date = parsed.date || null;
     parsed.gpThreshold = parsed.gpThreshold || null;
+    parsed.status = parsed.status || null;
 
     return parsed;
   } catch (err) {
@@ -210,9 +216,12 @@ async function formatResponse(orders, parsed, question) {
     if (parsed.fields && parsed.fields.length) {
       return parsed.fields.map(f => {
         switch(f) {
+
+          case "status": return `status: ${o.Status_TransH || "N/A"}`;
           case "so_number": return `so_number: ${o.so_upk || "N/A"}`;
           case "gp_rate": return `gp_rate: ${o.gpRate != null ? o.gpRate : "N/A"}`;
           default: return `${f}: ${o[f] || "N/A"}`;
+
         }
       }).join(" - ");
     } else {
@@ -254,10 +263,26 @@ async function formatResponse(orders, parsed, question) {
     return sorted.slice(0, topN).map(([rep, amt], i) => `Top ${i+1} Sales Personnel: ${rep} - Total Amount: ${formatPeso(amt)}`).join("\n");
   }
 
-  if (parsed.intent === "monthlyTotals" && parsed.year && (parsed.customer || parsed.salesRep)) {
+  if (parsed.intent === "monthlyTotals" && parsed.year && parsed.salesRep) {
   const monthlyMap = {};
+
+  // Define allowed statuses
+  const validStatuses = [
+    "BILLED",
+    "PARTIALLYBILLED/PARTIALLY DELIVERED",
+    "PARTIALLY DELIVERED",
+    "PENDING BILLING",
+    "PENDING DELIVERY",
+    "JO IN-PROCESS"
+  ];
+
   orders.forEach(o => {
     if (!o.date) return;
+    if (!validStatuses.includes(o.Status_TransH)) return; // skip cancelled/pending
+
+    // Only include orders from the salesRep requested
+    if (o.salesRep.toLowerCase() !== parsed.salesRep.toLowerCase()) return;
+
     const month = o.date.slice(0,7); // YYYY-MM
     monthlyMap[month] = (monthlyMap[month] || 0) + o.amount;
   });
@@ -265,8 +290,9 @@ async function formatResponse(orders, parsed, question) {
   return Object.entries(monthlyMap)
     .sort(([a],[b]) => a.localeCompare(b))
     .map(([month, amt]) => `${month}: ${formatPeso(amt)}`)
-    .join("\n");
+    .join("\n") || `No valid sales orders found for ${parsed.salesRep} in ${parsed.year}`;
 }
+
 
 
   return "Could not understand the question.";
